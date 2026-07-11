@@ -682,9 +682,22 @@ export default function RiddleField(props) {
     })
     const wrapperRef = useRef(null)
 
+    // Tracks the submit/download button's own pointer interaction so we can
+    // fire on pointerup (reliable on iOS/Android touch) instead of relying
+    // solely on the synthesized "click" event, which can get swallowed on
+    // mobile when a native container (Framer's own tap/drag handling) sits
+    // between the button and where React attaches its listeners.
+    const submitTouch = useRef({ x: 0, y: 0, active: false })
+    const skipNextClick = useRef(false)
+
     useLayoutEffect(() => {
         if (labelRef.current) {
-            const w = labelRef.current.getBoundingClientRect().width
+            // offsetWidth è la larghezza di layout, indipendente da un
+            // eventuale transform: scale() di un antenato (es. lo zoom del
+            // canvas Framer). getBoundingClientRect() invece riflette la
+            // dimensione già scalata a schermo — è quella a far sballare la
+            // matematica del bordo (gap troppo largo → linea che sporge).
+            const w = labelRef.current.offsetWidth
             if (w && Math.abs(w - labelW) > 0.5) setLabelW(w)
         }
     })
@@ -783,7 +796,10 @@ export default function RiddleField(props) {
         const labelLeft = 16,
             pad = 6
         const gapL = labelLeft - pad
-        const gapR = labelLeft + lw + pad
+        // Clamp come rete di sicurezza extra: anche se lw dovesse essere
+        // anomalo (letto durante un passaggio di layout transitorio/scalato),
+        // il gap non può mai superare la curva destra della pillola.
+        const gapR = Math.min(labelLeft + lw + pad, rightC - r * 0.6)
         const dx = gapL - leftC
         const dy = -Math.sqrt(Math.max(0, r * r - dx * dx))
         const gapLY = cy + dy
@@ -928,9 +944,51 @@ export default function RiddleField(props) {
                 />
                 <button
                     type="button"
-                    onClick={onSubmit}
+                    onPointerDownCapture={(e) => {
+                        // Fase di capture: arriva prima di qualsiasi listener
+                        // nativo di Framer sopra questo layer — è lì che il
+                        // tap veniva "mangiato" su mobile (Safari e Chrome).
+                        e.stopPropagation()
+                    }}
+                    onPointerUpCapture={(e) => {
+                        e.stopPropagation()
+                    }}
                     onPointerDown={(e) => {
                         e.stopPropagation()
+                        submitTouch.current = {
+                            x: e.clientX,
+                            y: e.clientY,
+                            active: true,
+                        }
+                    }}
+                    onPointerUp={(e) => {
+                        e.stopPropagation()
+                        const t = submitTouch.current
+                        if (!t.active) return
+                        submitTouch.current.active = false
+                        const dx = e.clientX - t.x
+                        const dy = e.clientY - t.y
+                        // Piccola tolleranza di movimento: un leggero
+                        // spostamento del dito durante il tap conta comunque
+                        // come tap, non come drag.
+                        if (Math.hypot(dx, dy) < 14) {
+                            skipNextClick.current = true
+                            onSubmit()
+                        }
+                    }}
+                    onPointerCancel={(e) => {
+                        e.stopPropagation()
+                        submitTouch.current.active = false
+                    }}
+                    onClick={(e) => {
+                        // Fallback per attivazione da tastiera (Enter/Space
+                        // su bottone focused) — in quel caso non ci sono
+                        // pointer events prima del click.
+                        if (skipNextClick.current) {
+                            skipNextClick.current = false
+                            return
+                        }
+                        onSubmit()
                     }}
                     aria-label={
                         status === "correct" ? "Download" : "Submit answer"
@@ -955,7 +1013,11 @@ export default function RiddleField(props) {
                         viewBox="0 0 26 26"
                         width={26}
                         height={26}
-                        style={{ display: "block", overflow: "visible" }}
+                        style={{
+                            display: "block",
+                            overflow: "visible",
+                            pointerEvents: "none",
+                        }}
                     >
                         <path
                             d={pathFor(m)}
